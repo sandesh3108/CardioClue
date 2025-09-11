@@ -5,6 +5,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import (accuracy_score, precision_score, recall_score, f1_score, 
                              confusion_matrix, roc_auc_score, classification_report, roc_curve)
+from imblearn.over_sampling import RandomOverSampler
 from collections import Counter
 import matplotlib.pyplot as plt
 import joblib
@@ -28,57 +29,64 @@ class HybridPipeline:
 
     def _load_data(self):
         if self.data_path.endswith(".csv"):
-            df = pd.read_csv(self.data_path)
+            return pd.read_csv(self.data_path)
         elif self.data_path.endswith(".xlsx") or self.data_path.endswith(".xls"):
-            df = pd.read_excel(self.data_path)
+            return pd.read_excel(self.data_path)
         else:
             raise ValueError("Unsupported file format. Use CSV or Excel.")
-        return df
 
     def preprocess(self):
         df = self.df.copy()
+
+        # Numeric and categorical columns
         numeric_cols = ["Age","SleepHours","Weight","Height","BMI",
                         "BloodSugar","HeartRate","ECG_RA","ECG_LA","ECG_RL","StressLevel"]
         categorical_cols = ["Gender","Smoker","ActivityLevel","Diet","Alcohol",
                             "FamilyHistory","HighBP","Diabetes","HeartDisease"]
-
         self.numeric_cols = numeric_cols
         self.categorical_cols = categorical_cols
 
-        # Fill target missing values
+        # Fill missing target values with mode
         if df[self.target_col].isna().any():
-            df[self.target_col] = df[self.target_col].fillna(df[self.target_col].mode().iloc[0])
+            df[self.target_col] = df[self.target_col].fillna(df[self.target_col].mode()[0])
 
-        # Check class distribution
+        # Handle stratify issue for rare classes
         class_counts = Counter(df[self.target_col])
         min_class_size = min(class_counts.values())
-        stratify = df[self.target_col] if min_class_size >= 2 else None
+        if min_class_size < 2:
+            stratify = None
+        else:
+            stratify = df[self.target_col]
 
-        # Train/test split
+        # Split data
         train_df, test_df = train_test_split(df, test_size=self.test_size,
                                              stratify=stratify, random_state=42)
 
-        stratify_train = train_df[self.target_col] if stratify is not None else None
+        if stratify is not None:
+            stratify_train = train_df[self.target_col]
+        else:
+            stratify_train = None
 
-        # Train/val split
         train_df, val_df = train_test_split(train_df, test_size=self.val_size,
                                             stratify=stratify_train, random_state=42)
 
-        self.train_df, self.val_df, self.test_df = train_df, val_df, test_df
-
-        # Scale numeric
+        # --- Scale numeric ---
         X_train_num = self.scaler.fit_transform(train_df[numeric_cols].fillna(0))
         X_val_num = self.scaler.transform(val_df[numeric_cols].fillna(0))
         X_test_num = self.scaler.transform(test_df[numeric_cols].fillna(0))
 
-        # Encode categorical
+        # --- Encode categorical ---
         X_train_cat, X_val_cat, X_test_cat = [], [], []
         self.cat_input_lens = []
+
         for col in categorical_cols:
             le = LabelEncoder()
-            le.fit(pd.concat([train_df[col].fillna('NA').astype(str),
-                              val_df[col].fillna('NA').astype(str),
-                              test_df[col].fillna('NA').astype(str)]))
+            combined_vals = pd.concat([
+                train_df[col].fillna('NA').astype(str),
+                val_df[col].fillna('NA').astype(str),
+                test_df[col].fillna('NA').astype(str)
+            ])
+            le.fit(combined_vals)
             self.label_encoders[col] = le
             X_train_cat.append(le.transform(train_df[col].fillna('NA').astype(str)))
             X_val_cat.append(le.transform(val_df[col].fillna('NA').astype(str)))
@@ -91,34 +99,49 @@ class HybridPipeline:
 
         # Encode target
         self.target_encoder = LabelEncoder()
-        self.target_encoder.fit(pd.concat([train_df[self.target_col].astype(str),
-                                           val_df[self.target_col].astype(str),
-                                           test_df[self.target_col].astype(str)]))
-
+        self.target_encoder.fit(pd.concat([train_df[self.target_col],
+                                           val_df[self.target_col],
+                                           test_df[self.target_col]]).astype(str))
         y_train = self.target_encoder.transform(train_df[self.target_col].astype(str)).astype(np.int32)
         y_val = self.target_encoder.transform(val_df[self.target_col].astype(str)).astype(np.int32)
         y_test = self.target_encoder.transform(test_df[self.target_col].astype(str)).astype(np.int32)
 
-        return (X_train_num, X_val_num, X_test_num,
-                X_train_cat, X_val_cat, X_test_cat,
-                y_train, y_val, y_test)
+        # --- Handle class imbalance ---
+        ros = RandomOverSampler(random_state=42)
+        X_combined = np.hstack([X_train_num] + [X_train_cat[:, i].reshape(-1,1) for i in range(X_train_cat.shape[1])])
+        X_resampled, y_resampled = ros.fit_resample(X_combined, y_train)
 
-    def build_model(self, num_numeric, cat_input_lens, num_classes=2, embedding_dim=4):
+        # Split numeric & categorical again after oversampling
+        X_train_num = X_resampled[:, :len(numeric_cols)]
+        X_train_cat = X_resampled[:, len(numeric_cols):].astype(np.int32)
+
+        return X_train_num, X_val_num, X_test_num, X_train_cat, X_val_cat, X_test_cat, y_resampled, y_val, y_test
+
+    def build_model(self, num_numeric, cat_input_lens, num_classes=2):
+        """Enhanced hybrid model with deeper layers and tuned embeddings"""
         numeric_input = tf.keras.layers.Input(shape=(num_numeric,), name="numeric_input")
         cat_inputs, cat_embeds = [], []
+
         for i, vocab_size in enumerate(cat_input_lens):
             inp = tf.keras.layers.Input(shape=(1,), name=f"cat_input_{i}")
-            emb = tf.keras.layers.Embedding(input_dim=vocab_size, output_dim=embedding_dim)(inp)
+            emb_dim = min(50, (vocab_size + 1) // 2)
+            emb = tf.keras.layers.Embedding(input_dim=vocab_size, output_dim=emb_dim)(inp)
             emb = tf.keras.layers.Flatten()(emb)
             cat_inputs.append(inp)
             cat_embeds.append(emb)
 
         x = tf.keras.layers.Concatenate()([numeric_input] + cat_embeds)
+        x = tf.keras.layers.Dense(256, activation="relu")(x)
+        x = tf.keras.layers.BatchNormalization()(x)
+        x = tf.keras.layers.Dropout(0.4)(x)
+
         x = tf.keras.layers.Dense(128, activation="relu")(x)
+        x = tf.keras.layers.BatchNormalization()(x)
         x = tf.keras.layers.Dropout(0.3)(x)
+
         x = tf.keras.layers.Dense(64, activation="relu")(x)
+        x = tf.keras.layers.BatchNormalization()(x)
         x = tf.keras.layers.Dropout(0.2)(x)
-        x = tf.keras.layers.Dense(32, activation="relu")(x)
 
         if num_classes == 2:
             output = tf.keras.layers.Dense(1, activation="sigmoid")(x)
@@ -128,7 +151,8 @@ class HybridPipeline:
             loss = "sparse_categorical_crossentropy"
 
         model = tf.keras.Model(inputs=[numeric_input] + cat_inputs, outputs=output)
-        model.compile(optimizer="adam", loss=loss, metrics=["accuracy"])
+        model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+                      loss=loss, metrics=["accuracy"])
         model.summary()
         return model
 
@@ -146,92 +170,83 @@ class HybridPipeline:
                 average = 'binary'
 
             acc = accuracy_score(y_test, y_pred)
-            prec = precision_score(y_test, y_pred, zero_division=0, average=(None if average=='binary' else 'macro'))
-            rec = recall_score(y_test, y_pred, zero_division=0, average=(None if average=='binary' else 'macro'))
-            f1 = f1_score(y_test, y_pred, zero_division=0, average=(None if average=='binary' else 'macro'))
-            roc = roc_auc_score(y_test, y_pred_prob) if average=='binary' else roc_auc_score(y_test, y_pred_raw, multi_class='ovr', average='macro')
-            cm = confusion_matrix(y_test, y_pred)
-        except Exception as e:
-            print(f"[ERROR] Evaluation failed: {e}")
-            acc = prec = rec = f1 = roc = None
-            cm = y_pred = None
+            prec = precision_score(y_test, y_pred, zero_division=0, average=(None if average=='binary' else average))
+            rec = recall_score(y_test, y_pred, zero_division=0, average=(None if average=='binary' else average))
+            f1 = f1_score(y_test, y_pred, zero_division=0, average=(None if average=='binary' else average))
+            if average == 'binary':
+                roc = roc_auc_score(y_test, y_pred_prob)
+            else:
+                roc = roc_auc_score(y_test, y_pred_prob, multi_class='ovr', average='macro')
 
-        print(f"Accuracy: {acc if acc is not None else 'N/A'}")
-        print(f"Precision: {prec if prec is not None else 'N/A'}")
-        print(f"Recall: {rec if rec is not None else 'N/A'}")
-        print(f"F1-Score: {f1 if f1 is not None else 'N/A'}")
-        print(f"ROC-AUC: {roc if roc is not None else 'N/A'}")
-        print("\nConfusion Matrix:\n", cm if cm is not None else 'N/A')
-        if y_pred is not None:
+            cm = confusion_matrix(y_test, y_pred)
+
+            print(f"Accuracy: {acc:.4f}")
+            print(f"Precision: {prec:.4f}")
+            print(f"Recall: {rec:.4f}")
+            print(f"F1-Score: {f1:.4f}")
+            print(f"ROC-AUC: {roc:.4f}")
+            print("\nConfusion Matrix:\n", cm)
             print("\nClassification Report:\n", classification_report(y_test, y_pred))
 
-        # Plot training
-        plt.figure(figsize=(12,5))
-        plt.subplot(1,2,1)
-        plt.plot(history.history.get('accuracy', []), label="Train Accuracy")
-        plt.plot(history.history.get('val_accuracy', []), label="Val Accuracy")
-        plt.title("Accuracy")
-        plt.xlabel("Epochs")
-        plt.ylabel("Accuracy")
-        plt.legend()
-        plt.subplot(1,2,2)
-        plt.plot(history.history.get('loss', []), label="Train Loss")
-        plt.plot(history.history.get('val_loss', []), label="Val Loss")
-        plt.title("Loss")
-        plt.xlabel("Epochs")
-        plt.ylabel("Loss")
-        plt.legend()
-        plt.show()
+            # Training curves
+            plt.figure(figsize=(12,5))
+            plt.subplot(1,2,1)
+            plt.plot(history.history['accuracy'], label="Train Accuracy")
+            plt.plot(history.history['val_accuracy'], label="Val Accuracy")
+            plt.title("Accuracy")
+            plt.legend()
 
-        if y_pred is not None and average == 'binary':
-            try:
+            plt.subplot(1,2,2)
+            plt.plot(history.history['loss'], label="Train Loss")
+            plt.plot(history.history['val_loss'], label="Val Loss")
+            plt.title("Loss")
+            plt.legend()
+            plt.show()
+
+            if average=='binary':
                 fpr, tpr, _ = roc_curve(y_test, y_pred_prob)
                 plt.figure(figsize=(6,6))
-                plt.plot(fpr, tpr, label=f"AUC={roc:.2f}")
+                plt.plot(fpr, tpr, label=f"ROC Curve (AUC={roc:.2f})")
                 plt.plot([0,1],[0,1],'k--')
-                plt.xlabel("False Positive Rate")
-                plt.ylabel("True Positive Rate")
-                plt.title("ROC Curve")
-                plt.legend()
-                plt.show()
-            except Exception as e:
-                print(f"[WARNING] ROC curve failed: {e}")
+                plt.xlabel("FPR"); plt.ylabel("TPR")
+                plt.legend(); plt.show()
+
+        except Exception as e:
+            print(f"[ERROR] Evaluation failed: {e}")
+            print("Accuracy: N/A\nPrecision: N/A\nRecall: N/A\nF1-Score: N/A\nROC-AUC: N/A\nConfusion Matrix:\n N/A")
 
     def run(self):
-        (X_train_num, X_val_num, X_test_num,
-         X_train_cat, X_val_cat, X_test_cat,
-         y_train, y_val, y_test) = self.preprocess()
+        X_train_num, X_val_num, X_test_num, X_train_cat, X_val_cat, X_test_cat, y_train, y_val, y_test = self.preprocess()
 
         num_classes = len(self.target_encoder.classes_) if self.target_encoder is not None else 2
-        model = self.build_model(num_numeric=X_train_num.shape[1],
-                                 cat_input_lens=self.cat_input_lens,
-                                 num_classes=num_classes)
+        model = self.build_model(num_numeric=X_train_num.shape[1], cat_input_lens=self.cat_input_lens, num_classes=num_classes)
 
-        train_inputs = [X_train_num] + [X_train_cat[:, i].reshape(-1, 1) for i in range(X_train_cat.shape[1])]
-        val_inputs = [X_val_num] + [X_val_cat[:, i].reshape(-1, 1) for i in range(X_val_cat.shape[1])]
-        test_inputs = [X_test_num] + [X_test_cat[:, i].reshape(-1, 1) for i in range(X_test_cat.shape[1])]
+        train_inputs = [X_train_num] + [X_train_cat[:, i].reshape(-1,1) for i in range(X_train_cat.shape[1])]
+        val_inputs = [X_val_num] + [X_val_cat[:, i].reshape(-1,1) for i in range(X_val_cat.shape[1])]
+        test_inputs = [X_test_num] + [X_test_cat[:, i].reshape(-1,1) for i in range(X_test_cat.shape[1])]
 
+        # Train with early stopping
+        early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
         history = model.fit(train_inputs, y_train,
                             validation_data=(val_inputs, y_val),
-                            epochs=100, batch_size=32,
-                            verbose=2)
+                            epochs=100, batch_size=32, verbose=2,
+                            callbacks=[early_stop])
 
         self.evaluate(model, history, test_inputs, y_test)
 
-        # Save model and preprocessors
-        models_dir = "models"
-        artifacts_dir = "artifacts"
-        os.makedirs(models_dir, exist_ok=True)
-        os.makedirs(artifacts_dir, exist_ok=True)
-
-        model.save(os.path.join(models_dir, "hybrid_model_opt.h5"))
-        joblib.dump(self.scaler, os.path.join(artifacts_dir, "scaler_opt.pkl"))
-        joblib.dump(self.label_encoders, os.path.join(artifacts_dir, "label_encoders_opt.pkl"))
-        joblib.dump(self.target_encoder, os.path.join(artifacts_dir, "target_encoder_opt.pkl"))
+        # Save artifacts
+        os.makedirs("models", exist_ok=True)
+        os.makedirs("artifacts", exist_ok=True)
+        model.save("models/hybrid_model.h5")
+        joblib.dump(self.scaler, "artifacts/scaler.pkl")
+        joblib.dump(self.label_encoders, "artifacts/label_encoders.pkl")
+        joblib.dump(self.target_encoder, "artifacts/target_encoder.pkl")
         print("[INFO] Model and preprocessors saved successfully.")
 
 
-# ----------------------------- Run Pipeline -----------------------------
+# ------------------------------
+# Run pipeline
+# ------------------------------
 if __name__ == "__main__":
     try:
         sys.stdout.reconfigure(encoding='utf-8')
