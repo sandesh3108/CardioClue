@@ -311,7 +311,7 @@ if __name__ == "__main__":
     except Exception:
         pass
     pipeline = HybridPipeline(
-        data_path="health_dataset_10k_with_risk_sample_with_ECG.xlsx",  # <-- change path here
+        data_path="datsset\health_dataset_10k_with_risk_sample_with_ECG.xlsx",  # <-- change path here
         target_col="EarlyCVD_Risk"
     )
     pipeline.run()
