@@ -1,0 +1,207 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8 col-md-10">
+    <div class="card shadow-sm">
+      <div class="card-body p-4">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h5 class="card-title mb-0">Questionnaire</h5>
+          <div class="small text-muted"><span id="qIndex">0</span>/<span id="qTotal">0</span></div>
+        </div>
+        <div class="progress mb-3">
+          <div id="qProgress" class="progress-bar" role="progressbar" style="width: 0%"></div>
+        </div>
+        <p class="text-muted">Answer questions one by one. Use Next to proceed.</p>
+        <form id="qForm" method="post">
+          <div id="qContainer"></div>
+          <div id="hiddenInputs"></div>
+          <div class="d-flex justify-content-between mt-3">
+            <button type="button" id="prevBtn" class="btn btn-outline-secondary" disabled>Previous</button>
+            <button type="button" id="nextBtn" class="btn btn-primary">Start Test</button>
+            <button type="submit" id="submitBtn" class="btn btn-success d-none">Submit</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const questions = [
+  {name:'smoker', label:'Smoker', type:'select', options:['Yes','No','Occasionally']},
+  {name:'activity', label:'Activity Level', type:'select', options:['Sedentary','Light','Moderate','Active']},
+  {name:'diet', label:'Diet', type:'select', options:['Unhealthy','Average','Healthy']},
+  {name:'alcohol', label:'Alcohol', type:'select', options:['Never','Occasionally','Regularly','Daily']},
+  {name:'sleep', label:'Sleep Hours', type:'number', step:'0.1'},
+  {name:'family', label:'Family History', type:'select', options:['Yes','No','Don\'t know']},
+  {name:'highbp', label:'High Blood Pressure', type:'select', options:['Yes','No']},
+  {name:'diabetes', label:'Diabetes', type:'select', options:['Yes','No']},
+  {name:'heartdisease', label:'Heart Disease', type:'select', options:['Yes','No']},
+  {name:'stress', label:'Stress Level (1-10)', type:'number', min:'1', max:'10'},
+  {name:'weight', label:'Weight (kg)', type:'number', step:'0.1'},
+  {name:'height', label:'Height (cm)', type:'number', step:'0.1'},
+  {name:'bmi', label:'BMI (if known, else leave blank)', type:'number', step:'0.1'},
+  {name:'bloodsugar', label:'Blood Sugar (mg/dL)', type:'number', step:'0.1'},
+  {name:'heartrate', label:'Heart Rate (bpm)', type:'number'},
+  {name:'ecg', label:'ECG Results (values or description)', type:'textarea'}
+];
+
+let idx = -1;
+const container = document.getElementById('qContainer');
+const hiddenInputs = document.getElementById('hiddenInputs');
+const answers = {};
+const nextBtn = document.getElementById('nextBtn');
+const prevBtn = document.getElementById('prevBtn');
+const submitBtn = document.getElementById('submitBtn');
+const qIndex = document.getElementById('qIndex');
+const qTotal = document.getElementById('qTotal');
+const qProgress = document.getElementById('qProgress');
+
+qTotal.textContent = questions.length;
+
+function updateProgress() {
+  const shownIndex = idx < 0 ? 0 : idx + 1;
+  qIndex.textContent = shownIndex;
+  const pct = idx < 0 ? 0 : Math.round((shownIndex) / questions.length * 100);
+  qProgress.style.width = pct + '%';
+}
+
+function focusFirstInput() {
+  const el = container.querySelector('input, select, textarea');
+  if (el) el.focus();
+}
+
+function render() {
+  container.innerHTML = '';
+  if (idx === -1) {
+    nextBtn.textContent = 'Start Test';
+    container.innerHTML = `<div class="p-4 gradient-pink rounded text-muted">Click Start Test to begin.</div>`;
+    prevBtn.disabled = true;
+    submitBtn.classList.add('d-none');
+    updateProgress();
+    return;
+  }
+  const q = questions[idx];
+  let inputHTML = '';
+  if (q.type === 'select') {
+    inputHTML = `<div class=\"btn-group-vertical w-100\" role=\"group\" aria-label=\"${q.label}\">` +
+      q.options.map(o=>{
+        const id = `${q.name}_${o.replace(/\s+/g, '_')}`;
+        const checked = answers[q.name] === o ? 'checked' : '';
+        return `<input type=\"radio\" class=\"btn-check\" name=\"${q.name}\" id=\"${id}\" value=\"${o}\" ${checked}>
+        <label class=\"btn btn-outline-primary mb-2\" for=\"${id}\">${o}</label>`;
+      }).join('') + `</div>`;
+  } else if (q.type === 'textarea') {
+    const val = answers[q.name] || '';
+    inputHTML = `<textarea class=\"form-control\" name=\"${q.name}\" rows=\"3\">${val}</textarea>`;
+  } else {
+    const attrs = ['type','min','max','step'].map(a=> q[a]? `${a}="${q[a]}"` : '').join(' ');
+    const isOptional = q.name === 'bmi';
+    const val = answers[q.name] != null ? `value=\"${answers[q.name]}\"` : '';
+    inputHTML = `<input class=\"form-control\" name=\"${q.name}\" ${attrs} ${val} ${isOptional ? '' : 'required'}>`;
+  }
+  container.innerHTML = `
+    <div class="flip-box p-3 gradient-indigo">
+      <label class="form-label">${q.label}</label>
+      ${inputHTML}
+    </div>`;
+  prevBtn.disabled = idx===0;
+  if (idx === questions.length-1) {
+    nextBtn.classList.add('d-none');
+    submitBtn.classList.remove('d-none');
+  } else {
+    nextBtn.classList.remove('d-none');
+    submitBtn.classList.add('d-none');
+    nextBtn.textContent = 'Next';
+  }
+  updateProgress();
+  setTimeout(()=>{
+    focusFirstInput();
+    attachAnswerGuards();
+  }, 0);
+}
+
+function isCurrentAnswered(){
+  if (idx < 0) return true;
+  const q = questions[idx];
+  if (q.type === 'select') {
+    return !!container.querySelector(`input[name="${q.name}"]:checked`);
+  }
+  if (q.type === 'textarea') {
+    return true; // optional
+  }
+  const input = container.querySelector(`input[name="${q.name}"]`);
+  if (!input) return false;
+  if (q.name === 'bmi') return true; // optional
+  return input.value !== '' && input.value != null;
+}
+
+function attachAnswerGuards(){
+  nextBtn.disabled = !(idx === -1 || isCurrentAnswered());
+  container.querySelectorAll('input, select, textarea, label').forEach(el=>{
+    el.addEventListener('input', ()=>{ saveCurrentAnswer(); nextBtn.disabled = !isCurrentAnswered(); });
+    el.addEventListener('change', ()=>{ saveCurrentAnswer(); nextBtn.disabled = !isCurrentAnswered(); });
+    if (el.tagName === 'LABEL') {
+      el.addEventListener('click', ()=>{ setTimeout(()=>{ saveCurrentAnswer(); nextBtn.disabled = !isCurrentAnswered(); }, 0); });
+    }
+  });
+}
+
+function saveCurrentAnswer(){
+  if (idx < 0) return;
+  const q = questions[idx];
+  let value = '';
+  if (q.type === 'select') {
+    const checked = container.querySelector(`input[name=\"${q.name}\"]:checked`);
+    value = checked ? checked.value : '';
+  } else if (q.type === 'textarea') {
+    const el = container.querySelector(`textarea[name=\"${q.name}\"]`);
+    value = el ? el.value : '';
+  } else {
+    const el = container.querySelector(`input[name=\"${q.name}\"]`);
+    value = el ? el.value : '';
+  }
+  if (value !== '') {
+    answers[q.name] = value;
+  }
+  syncHiddenInputs();
+}
+
+function syncHiddenInputs(){
+  hiddenInputs.innerHTML = Object.keys(answers).map(k=>{
+    const v = answers[k];
+    return `<input type=\"hidden\" name=\"${k}\" value=\"${v}\">`;
+  }).join('');
+}
+
+nextBtn.addEventListener('click', ()=>{ 
+  if (idx >= 0 && !isCurrentAnswered()) { 
+    nextBtn.disabled = true; 
+    return; 
+  }
+  saveCurrentAnswer();
+  idx++; 
+  if (idx >= questions.length) idx = questions.length - 1; 
+  render(); 
+});
+prevBtn.addEventListener('click', ()=>{ saveCurrentAnswer(); idx--; if (idx<-1) idx=-1; render(); });
+
+document.addEventListener('keydown', (e)=>{
+  if (e.key === 'Enter' && !submitBtn.classList.contains('d-none')) return; // allow submit when ready
+  if (e.key === 'Enter') { 
+    e.preventDefault(); 
+    if (idx === -1 || isCurrentAnswered()) nextBtn.click();
+  }
+  if (e.key === 'ArrowRight') { nextBtn.click(); }
+  if (e.key === 'ArrowLeft') { prevBtn.click(); }
+});
+
+document.getElementById('qForm').addEventListener('submit', ()=>{ saveCurrentAnswer(); });
+
+render();
+</script>
+{% endblock %}
+
+

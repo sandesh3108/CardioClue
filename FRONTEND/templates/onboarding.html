@@ -1,0 +1,42 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-7 col-lg-6">
+    <div class="card shadow-sm hover-rise">
+      <div class="card-body p-4 p-md-5">
+        <h5 class="card-title mb-3">Tell us about you</h5>
+        <p class="text-muted">We need a few basic details to personalize your assessment.</p>
+        <form method="post">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input class="form-control" name="name" value="{{ user.name or '' }}" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Phone</label>
+            <input class="form-control" name="phone" value="{{ user.phone or '' }}" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Age <span class="text-danger">*</span></label>
+            <input class="form-control" name="age" type="number" min="0" required>
+          </div>
+          <div class="mb-4">
+            <label class="form-label">Gender <span class="text-danger">*</span></label>
+            <select class="form-select" name="gender" required>
+              <option value="" {% if not user.gender %}selected{% endif %}>Select</option>
+              <option {% if user.gender=='Male' %}selected{% endif %}>Male</option>
+              <option {% if user.gender=='Female' %}selected{% endif %}>Female</option>
+              <option {% if user.gender=='Other' %}selected{% endif %}>Other</option>
+            </select>
+          </div>
+          <div class="d-grid">
+            <button class="btn btn-primary btn-lg">Save & Start Test</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+
+
