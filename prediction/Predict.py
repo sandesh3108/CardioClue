@@ -11,10 +11,10 @@ def _first_existing(paths):
             return p
     return paths[0]
 
-model_path = _first_existing(["models/hybrid_model1.h5"]) 
-scaler_path = _first_existing(["artifacts/scaler1.pkl"]) 
-encoders_path = _first_existing(["artifacts/label_encoders1.pkl"]) 
-target_encoder_path = _first_existing(["artifacts/target_encoder1.pkl"]) 
+model_path = _first_existing(["models/hybrid_model.h5", "models/hybrid_model1.h5"]) 
+scaler_path = _first_existing(["artifacts/scaler.pkl", "artifacts/scaler1.pkl"]) 
+encoders_path = _first_existing(["artifacts/label_encoders.pkl", "artifacts/label_encoders1.pkl"]) 
+target_encoder_path = _first_existing(["artifacts/target_encoder.pkl", "artifacts/target_encoder1.pkl"]) 
 
 model = tf.keras.models.load_model(model_path)
 scaler = joblib.load(scaler_path)
@@ -32,6 +32,76 @@ numeric_cols = ["Age","SleepHours","Weight","Height","BMI",
 
 categorical_cols = ["Gender","Smoker","ActivityLevel","Diet","Alcohol",
                     "FamilyHistory","HighBP","Diabetes","HeartDisease"]
+
+# Risk categorization function (matches training)
+def categorize_risk(risk_value):
+    if risk_value <= 50:
+        return "Low"
+    elif risk_value <= 100:
+        return "Medium"
+    else:
+        return "High"
+
+def compute_risk_score(sample):
+    """Compute raw risk score from features (for reference)"""
+    # This is a simplified risk calculation based on common factors
+    risk_score = 0
+    
+    # Age factor
+    age = sample.get('Age', 0)
+    if age > 65:
+        risk_score += 30
+    elif age > 50:
+        risk_score += 20
+    elif age > 35:
+        risk_score += 10
+    
+    # BMI factor
+    bmi = sample.get('BMI', 0)
+    if bmi > 30:
+        risk_score += 25
+    elif bmi > 25:
+        risk_score += 15
+    
+    # Blood pressure
+    if sample.get('HighBP', '').lower() in ['yes', 'true', '1']:
+        risk_score += 20
+    
+    # Diabetes
+    if sample.get('Diabetes', '').lower() in ['yes', 'true', '1']:
+        risk_score += 25
+    
+    # Smoking
+    if sample.get('Smoker', '').lower() in ['yes', 'true', '1']:
+        risk_score += 30
+    
+    # Family history
+    if sample.get('FamilyHistory', '').lower() in ['yes', 'true', '1']:
+        risk_score += 15
+    
+    # Heart disease
+    if sample.get('HeartDisease', '').lower() in ['yes', 'true', '1']:
+        risk_score += 40
+    
+    # Blood sugar
+    blood_sugar = sample.get('BloodSugar', 0)
+    if blood_sugar > 140:
+        risk_score += 20
+    elif blood_sugar > 126:
+        risk_score += 15
+    
+    # Heart rate
+    heart_rate = sample.get('HeartRate', 0)
+    if heart_rate > 100:
+        risk_score += 10
+    elif heart_rate < 60:
+        risk_score += 5
+    
+    # Stress level
+    stress = sample.get('StressLevel', 0)
+    risk_score += stress * 2
+    
+    return max(0, min(100, risk_score))  # Clamp between 0-100
 
 def preprocess_single(sample):
     df = pd.DataFrame([sample])
@@ -59,21 +129,23 @@ def preprocess_single(sample):
 def predict(sample):
     inputs = preprocess_single(sample)
     y = model.predict(inputs, verbose=0)
-    # Binary vs multiclass
+    
+    # Handle 3-class risk categorization
     if y.ndim == 2 and y.shape[1] > 1:
         probs = y[0]
         pred_class = int(np.argmax(probs))
-        pred_label = None
-        if target_encoder is not None and hasattr(target_encoder, 'inverse_transform'):
-            try:
-                pred_label = target_encoder.inverse_transform([pred_class])[0]
-            except Exception:
-                pred_label = None
-        return (pred_label if pred_label is not None else pred_class), float(np.max(probs))
+        confidence = float(np.max(probs))
+        
+        # Map class indices to risk categories
+        risk_categories = {0: "Low", 1: "Medium", 2: "High"}
+        pred_label = risk_categories.get(pred_class, f"Class_{pred_class}")
+        
+        return pred_label, confidence, probs
     else:
+        # Fallback for binary classification
         prob = float(y[0][0])
         pred = int(prob > 0.5)
-        return pred, prob
+        return ("High" if pred == 1 else "Low"), prob, [1-prob, prob]
 
 if __name__ == "__main__":
     print("=== Enter Patient Details ===")
@@ -89,30 +161,59 @@ if __name__ == "__main__":
         val = input(f"Enter {col}: ")
         sample[col] = val
 
-    # Predict
-    pred, prob = predict(sample)
+    # Compute reference risk score
+    risk_score = compute_risk_score(sample)
+    risk_category_ref = categorize_risk(risk_score)
+    
+    # Predict using ML model
+    pred_label, confidence, probs = predict(sample)
     print("\n=== Prediction Result ===")
 
-    # Helper to convert probability to risk tier
-    def risk_tier(p):
-        if p >= 0.70:
-            return "High Risk"
-        if p >= 0.40:
-            return "Moderate Risk"
-        return "Low Risk"
-
-    # Detect multiclass vs binary from model output shape
-    is_multiclass = hasattr(model.output_shape, "__iter__") and len(model.output_shape) > 1 and model.output_shape[1] > 1
-
-    if is_multiclass:
-        percent = prob * 100.0
-        print(f"Predicted class: {pred}")
-        print(f"Confidence: {percent:.1f}%")
-        print("Note: Risk tiers (Low/Moderate/High) apply to binary models. This model is multiclass.")
+    # Display ML model results
+    print(f"ML Model Prediction: {pred_label}")
+    print(f"Confidence: {confidence:.1%}")
+    
+    # Show reference calculation
+    print(f"\nReference Calculation:")
+    print(f"Computed Risk Score: {risk_score}/100")
+    print(f"Risk Category: {risk_category_ref}")
+    
+    # Show probability distribution for all risk categories
+    risk_categories = ["Low", "Medium", "High"]
+    print("\nProbability Distribution:")
+    for i, category in enumerate(risk_categories):
+        if i < len(probs):
+            print(f"  {category} Risk: {probs[i]:.1%}")
+    
+    # Check if ML prediction matches reference
+    if pred_label == risk_category_ref:
+        print(f"\n✅ ML model prediction matches reference calculation")
     else:
-        percent = prob * 100.0
-        tier = risk_tier(prob)
-        human = "Yes" if pred == 1 else "No"
-        print(f"Heart attack risk: {tier}")
-        print(f"Probability: {percent:.1f}%")
-        print(f"High-risk prediction: {human}")
+        print(f"\n⚠️  ML model prediction differs from reference calculation")
+        print(f"   ML Model: {pred_label}, Reference: {risk_category_ref}")
+    
+    # Provide interpretation
+    print(f"\nInterpretation:")
+    if pred_label == "Low":
+        print("  ✅ Low cardiovascular risk - Continue healthy lifestyle")
+    elif pred_label == "Medium":
+        print("  ⚠️  Medium cardiovascular risk - Consider lifestyle changes and regular monitoring")
+    else:  # High
+        print("  🚨 High cardiovascular risk - Consult healthcare provider immediately")
+    
+    # Additional recommendations based on risk level
+    print(f"\nRecommendations:")
+    if pred_label == "Low":
+        print("  • Maintain current healthy habits")
+        print("  • Regular exercise and balanced diet")
+        print("  • Annual health checkups")
+    elif pred_label == "Medium":
+        print("  • Increase physical activity")
+        print("  • Improve diet (reduce salt, saturated fats)")
+        print("  • Monitor blood pressure and cholesterol")
+        print("  • Consider stress management techniques")
+    else:  # High
+        print("  • Immediate consultation with cardiologist")
+        print("  • Strict medication compliance if prescribed")
+        print("  • Lifestyle modifications under medical supervision")
+        print("  • Regular monitoring of vital signs")
