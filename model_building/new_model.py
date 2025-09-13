@@ -57,6 +57,19 @@ class HybridPipeline:
         if df[self.target_col].isna().any():
             df[self.target_col] = df[self.target_col].fillna(df[self.target_col].mode()[0])
 
+        # Create risk categories instead of continuous values
+        def categorize_risk(risk_value):
+            if risk_value <= 50:
+                return "Low"
+            elif risk_value <= 100:
+                return "Medium"
+            else:
+                return "High"
+
+        # Apply risk categorization
+        df[self.target_col] = df[self.target_col].apply(categorize_risk)
+        print(f"[INFO] Risk categories: {df[self.target_col].value_counts()}")
+
         # Handle stratify issue
         class_counts = Counter(df[self.target_col])
         stratify = df[self.target_col] if min(class_counts.values()) >= 2 else None
@@ -72,6 +85,10 @@ class HybridPipeline:
         X_train_num = self.scaler.fit_transform(train_df[numeric_cols].fillna(0))
         X_val_num = self.scaler.transform(val_df[numeric_cols].fillna(0))
         X_test_num = self.scaler.transform(test_df[numeric_cols].fillna(0))
+
+        # Add small amount of noise to training data to prevent overfitting
+        noise_factor = 0.01
+        X_train_num = X_train_num + np.random.normal(0, noise_factor, X_train_num.shape)
 
         # --- Encode categorical ---
         X_train_cat, X_val_cat, X_test_cat = [], [], []
@@ -106,8 +123,12 @@ class HybridPipeline:
         y_val = self.target_encoder.transform(val_df[self.target_col].astype(str)).astype(np.int32)
         y_test = self.target_encoder.transform(test_df[self.target_col].astype(str)).astype(np.int32)
 
-        # --- Handle class imbalance ---
-        ros = RandomOverSampler(random_state=42)
+        # --- Handle class imbalance with SMOTE ---
+        from imblearn.over_sampling import SMOTE
+        
+        # Always apply SMOTE to ensure balanced classes
+        print(f"[INFO] Original class distribution: {Counter(y_train)}")
+        ros = SMOTE(random_state=42)
         X_combined = np.hstack([X_train_num] + [X_train_cat[:, i].reshape(-1, 1)
                                                for i in range(X_train_cat.shape[1])])
         X_resampled, y_resampled = ros.fit_resample(X_combined, y_train)
@@ -115,6 +136,7 @@ class HybridPipeline:
         # Split numeric & categorical again after oversampling
         X_train_num = X_resampled[:, :len(numeric_cols)]
         X_train_cat = X_resampled[:, len(numeric_cols):].astype(np.int32)
+        print(f"[INFO] After SMOTE class distribution: {Counter(y_resampled)}")
 
         return X_train_num, X_val_num, X_test_num, X_train_cat, X_val_cat, X_test_cat, y_resampled, y_val, y_test
 
@@ -134,27 +156,24 @@ class HybridPipeline:
             cat_embeds.append(emb)
 
         x = tf.keras.layers.Concatenate()([numeric_input] + cat_embeds)
-        x = tf.keras.layers.Dense(256, activation="relu")(x)
+        x = tf.keras.layers.Dense(64, activation="relu", kernel_regularizer=tf.keras.regularizers.l2(0.01))(x)
+        x = tf.keras.layers.BatchNormalization()(x)
+        x = tf.keras.layers.Dropout(0.6)(x)
+
+        x = tf.keras.layers.Dense(32, activation="relu", kernel_regularizer=tf.keras.regularizers.l2(0.01))(x)
+        x = tf.keras.layers.BatchNormalization()(x)
+        x = tf.keras.layers.Dropout(0.5)(x)
+
+        x = tf.keras.layers.Dense(16, activation="relu", kernel_regularizer=tf.keras.regularizers.l2(0.01))(x)
         x = tf.keras.layers.BatchNormalization()(x)
         x = tf.keras.layers.Dropout(0.4)(x)
 
-        x = tf.keras.layers.Dense(128, activation="relu")(x)
-        x = tf.keras.layers.BatchNormalization()(x)
-        x = tf.keras.layers.Dropout(0.3)(x)
-
-        x = tf.keras.layers.Dense(64, activation="relu")(x)
-        x = tf.keras.layers.BatchNormalization()(x)
-        x = tf.keras.layers.Dropout(0.2)(x)
-
-        if num_classes == 2:
-            output = tf.keras.layers.Dense(1, activation="sigmoid")(x)
-            loss = "binary_crossentropy"
-        else:
-            output = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
-            loss = "sparse_categorical_crossentropy"
+        # Since we now have 3 risk categories, use multiclass classification
+        output = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
+        loss = "sparse_categorical_crossentropy"
 
         model = tf.keras.Model(inputs=[numeric_input] + cat_inputs, outputs=output)
-        model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+        model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.00001),
                       loss=loss, metrics=["accuracy"])
         model.summary()
         return model
@@ -162,57 +181,28 @@ class HybridPipeline:
     # -------------------------
     # Evaluate
     # -------------------------
-    def evaluate(self, model, history, test_inputs, y_test):
+    def evaluate(self, model, history, test_inputs, y_test, num_classes=3):
         print("\n[INFO] Running Evaluation...")
         try:
             y_pred_raw = model.predict(test_inputs)
 
-            if y_pred_raw.ndim == 2 and y_pred_raw.shape[1] > 1:
-                y_pred_prob = y_pred_raw
-                y_pred = np.argmax(y_pred_prob, axis=1)
-                average = 'macro'
-            else:
-                y_pred_prob = y_pred_raw.ravel()
-                y_pred = (y_pred_prob > 0.5).astype(int)
-                average = 'binary'
+            # For 3-class classification, always use multiclass approach
+            y_pred_prob = y_pred_raw
+            y_pred = np.argmax(y_pred_prob, axis=1)
+            average = 'macro'
 
             acc = accuracy_score(y_test, y_pred)
 
-            if average == 'binary':
-                prec = precision_score(y_test, y_pred, zero_division=0)
-                rec = recall_score(y_test, y_pred, zero_division=0)
-                f1 = f1_score(y_test, y_pred, zero_division=0)
-                # Handle single-class edge case safely for ROC-AUC
-                unique_classes = np.unique(y_test)
-                if unique_classes.size < 2:
-                    roc = float('nan')
-                else:
-                    roc = roc_auc_score(y_test, y_pred_prob)
-            else:
-                prec = precision_score(y_test, y_pred, zero_division=0, average=average)
-                rec = recall_score(y_test, y_pred, zero_division=0, average=average)
-                f1 = f1_score(y_test, y_pred, zero_division=0, average=average)
-                # Align y_score columns with classes present in y_test to avoid mismatch errors
-                classes_in_test = np.unique(y_test)
-                score_matrix = y_pred_prob.astype(np.float64)
-                # If model outputs more classes than present in y_test, subset and remap
-                if score_matrix.shape[1] != classes_in_test.size:
-                    # Subset score columns to only classes present in y_test
-                    score_matrix = score_matrix[:, classes_in_test]
-                    # Renormalize per row so probabilities sum to 1
-                    row_sums = score_matrix.sum(axis=1, keepdims=True)
-                    row_sums[row_sums == 0.0] = 1.0
-                    score_matrix = score_matrix / row_sums
-                    # Remap y_test to 0..k-1 based on present classes
-                    label_to_index = {label: idx for idx, label in enumerate(classes_in_test)}
-                    y_test_mapped = np.vectorize(label_to_index.get)(y_test)
-                    roc = roc_auc_score(y_test_mapped, score_matrix, multi_class='ovr', average='macro')
-                else:
-                    # Ensure rows sum to 1.0 (numerical safety)
-                    row_sums = score_matrix.sum(axis=1, keepdims=True)
-                    row_sums[row_sums == 0.0] = 1.0
-                    score_matrix = score_matrix / row_sums
-                    roc = roc_auc_score(y_test, score_matrix, multi_class='ovr', average='macro')
+            # Calculate metrics for 3-class classification
+            prec = precision_score(y_test, y_pred, zero_division=0, average=average)
+            rec = recall_score(y_test, y_pred, zero_division=0, average=average)
+            f1 = f1_score(y_test, y_pred, zero_division=0, average=average)
+            
+            # Calculate ROC-AUC for multiclass
+            try:
+                roc = roc_auc_score(y_test, y_pred_prob, multi_class='ovr', average='macro')
+            except:
+                roc = float('nan')
 
             cm = confusion_matrix(y_test, y_pred)
 
@@ -240,17 +230,37 @@ class HybridPipeline:
                 plt.legend()
                 plt.show()
 
-            if average == 'binary':
-                unique_classes = np.unique(y_test)
-                if unique_classes.size < 2:
-                    return
-                fpr, tpr, _ = roc_curve(y_test, y_pred_prob)
-                plt.figure(figsize=(6, 6))
-                plt.plot(fpr, tpr, label=f"ROC Curve (AUC={roc:.2f})")
-                plt.plot([0, 1], [0, 1], 'k--')
-                plt.xlabel("FPR")
-                plt.ylabel("TPR")
-                plt.legend()
+            # ROC Curve for multiclass (one-vs-rest)
+            if len(np.unique(y_test)) > 1:
+                from sklearn.preprocessing import label_binarize
+                from sklearn.metrics import roc_curve, auc
+                
+                # Binarize the output
+                y_test_bin = label_binarize(y_test, classes=range(num_classes))
+                
+                # Compute ROC curve and ROC area for each class
+                fpr = dict()
+                tpr = dict()
+                roc_auc = dict()
+                
+                for i in range(num_classes):
+                    fpr[i], tpr[i], _ = roc_curve(y_test_bin[:, i], y_pred_prob[:, i])
+                    roc_auc[i] = auc(fpr[i], tpr[i])
+                
+                # Plot ROC curves
+                plt.figure(figsize=(8, 6))
+                colors = ['blue', 'red', 'green']
+                for i, color in zip(range(num_classes), colors):
+                    plt.plot(fpr[i], tpr[i], color=color, lw=2,
+                            label=f'Class {i} (AUC = {roc_auc[i]:.2f})')
+                
+                plt.plot([0, 1], [0, 1], 'k--', lw=2)
+                plt.xlim([0.0, 1.0])
+                plt.ylim([0.0, 1.05])
+                plt.xlabel('False Positive Rate')
+                plt.ylabel('True Positive Rate')
+                plt.title('ROC Curves for Risk Categories')
+                plt.legend(loc="lower right")
                 plt.show()
 
         except Exception as e:
@@ -265,25 +275,39 @@ class HybridPipeline:
         num_classes = len(self.target_encoder.classes_) if self.target_encoder is not None else 2
         model = self.build_model(num_numeric=X_train_num.shape[1], cat_input_lens=self.cat_input_lens, num_classes=num_classes)
 
+        # Calculate class weights for imbalanced data
+        from sklearn.utils.class_weight import compute_class_weight
+        class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+        class_weight_dict = dict(enumerate(class_weights))
+        print(f"[INFO] Class weights: {class_weight_dict}")
+
         train_inputs = [X_train_num] + [X_train_cat[:, i].reshape(-1, 1) for i in range(X_train_cat.shape[1])]
         val_inputs = [X_val_num] + [X_val_cat[:, i].reshape(-1, 1) for i in range(X_val_cat.shape[1])]
         test_inputs = [X_test_num] + [X_test_cat[:, i].reshape(-1, 1) for i in range(X_test_cat.shape[1])]
 
-        early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+        # Add early stopping and learning rate reduction
+        early_stopping = tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss', patience=5, restore_best_weights=True, min_delta=0.001
+        )
+        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss', factor=0.3, patience=3, min_lr=1e-8
+        )
+
         history = model.fit(train_inputs, y_train,
                             validation_data=(val_inputs, y_val),
-                            epochs=100, batch_size=32, verbose=2,
-                            callbacks=[])
+                            epochs=30, batch_size=16, verbose=2,
+                            class_weight=class_weight_dict,
+                            callbacks=[early_stopping, reduce_lr])
 
-        self.evaluate(model, history, test_inputs, y_test)
+        self.evaluate(model, history, test_inputs, y_test, num_classes)
 
-        # os.makedirs("models", exist_ok=True)
-        # os.makedirs("artifacts", exist_ok=True)
-        # model.save("models/hybrid_model.h5")
-        # joblib.dump(self.scaler, "artifacts/scaler.pkl")
-        # joblib.dump(self.label_encoders, "artifacts/label_encoders.pkl")
-        # joblib.dump(self.target_encoder, "artifacts/target_encoder.pkl")
-        # print("[INFO] Model and preprocessors saved successfully.")
+        os.makedirs("models", exist_ok=True)
+        os.makedirs("artifacts", exist_ok=True)
+        model.save("models/hybrid_model.h5")
+        joblib.dump(self.scaler, "artifacts/scaler.pkl")
+        joblib.dump(self.label_encoders, "artifacts/label_encoders.pkl")
+        joblib.dump(self.target_encoder, "artifacts/target_encoder.pkl")
+        print("[INFO] Model and preprocessors saved successfully.")
 
 
 # ------------------------------
