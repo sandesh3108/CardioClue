@@ -1,0 +1,45 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6">
+    <div class="card shadow-sm hover-rise gradient-teal">
+      <div class="card-body p-4">
+        <h5 class="card-title mb-3">Verify OTP</h5>
+        <p class="text-muted">We sent an OTP to {{ phone }}. Since this is a demo, your OTP is shown here: <span class="fw-bold">{{ otp }}</span></p>
+        <form method="post">
+          <div class="mb-3">
+            <label class="form-label">Enter OTP</label>
+            <input type="text" class="form-control" name="otp" maxlength="6" required>
+          </div>
+          <div class="d-flex align-items-center justify-content-between">
+            <button class="btn btn-success">Verify</button>
+            <button id="resendBtn" type="button" class="btn btn-outline-primary" disabled>Resend in <span id="timer">30</span>s</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let seconds = 30;
+const timerEl = document.getElementById('timer');
+const resendBtn = document.getElementById('resendBtn');
+const interval = setInterval(()=>{
+  seconds--; timerEl.textContent = seconds;
+  if (seconds <= 0) {
+    clearInterval(interval);
+    resendBtn.disabled = false;
+    resendBtn.textContent = 'Resend OTP';
+  }
+}, 1000);
+resendBtn?.addEventListener('click', ()=>{
+  resendBtn.disabled = true;
+  resendBtn.textContent = 'Sent!';
+});
+</script>
+{% endblock %}
+
+

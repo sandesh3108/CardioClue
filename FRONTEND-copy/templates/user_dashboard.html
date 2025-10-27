@@ -1,0 +1,91 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row g-4">
+  <div class="col-md-4">
+    <div class="card shadow-sm hover-rise">
+      <div class="card-body">
+        <h6 class="mb-3">Profile</h6>
+        <form method="post">
+          <div class="mb-2">
+            <label class="form-label">Name</label>
+            <input class="form-control" name="name" value="{{ user.name or '' }}" required>
+          </div>
+          <div class="mb-2">
+            <label class="form-label">Phone</label>
+            <input class="form-control" name="phone" value="{{ user.phone or '' }}" required>
+          </div>
+          <div class="mb-2">
+            <label class="form-label">Age</label>
+            <input class="form-control" name="age" value="{{ user.age or '' }}" type="number" min="0">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Gender</label>
+            <select class="form-select" name="gender">
+              <option value="" {% if not user.gender %}selected{% endif %}>Select</option>
+              <option {% if user.gender=='Male' %}selected{% endif %}>Male</option>
+              <option {% if user.gender=='Female' %}selected{% endif %}>Female</option>
+              <option {% if user.gender=='Other' %}selected{% endif %}>Other</option>
+            </select>
+          </div>
+          <div class="d-flex justify-content-between align-items-center">
+            <small class="text-muted">User ID: <span class="text-monospace">{{ user.userId }}</span></small>
+            <button class="btn btn-sm btn-primary">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-8">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <h6 class="mb-0">Reports</h6>
+      <div class="btn-group">
+        {% if tests %}
+        <a href="{{ url_for('report', testId=tests[0].testId) }}" class="btn btn-info">View Latest Report</a>
+        {% endif %}
+        <a href="{{ url_for('test', userId=user.userId) }}" class="btn btn-success">Start New Test</a>
+      </div>
+    </div>
+    <div class="card shadow-sm hover-rise">
+      <div class="card-body">
+        {% if tests %}
+        <div class="list-group">
+          {% for t in tests %}
+          <div class="list-group-item d-flex justify-content-between align-items-center">
+            <div>
+              <div class="fw-semibold">Test {{ loop.revindex }} • {{ t.timestamp.strftime('%Y-%m-%d %H:%M') if t.timestamp else '' }}</div>
+              <div class="small text-muted">Risk: <span class="badge {% if t.riskResult=='High' %}bg-danger{% elif t.riskResult=='Medium' %}bg-warning text-dark{% else %}bg-success{% endif %}">{{ t.riskResult }}</span></div>
+            </div>
+            <div class="btn-group">
+              <a class="btn btn-sm btn-outline-primary" href="{{ url_for('report', testId=t.testId) }}">View</a>
+              <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('download_report', testId=t.testId) }}">Download</a>
+              <button class="btn btn-sm btn-outline-success" onclick="shareReport('{{ t.testId }}')">Share</button>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+          <div class="text-center py-4">
+            <div class="mb-2">🫀</div>
+            <p class="text-muted mb-2">No reports yet.</p>
+            <a href="{{ url_for('test', userId=user.userId) }}" class="btn btn-primary">Start your first test</a>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function shareReport(testId) {
+  try {
+    const res = await fetch(`/report/${testId}/share`, {method:'POST'});
+    const data = await res.json();
+    alert(data.message || 'Shared.');
+  } catch (e) { alert('Failed to share.'); }
+}
+</script>
+{% endblock %}
+
+

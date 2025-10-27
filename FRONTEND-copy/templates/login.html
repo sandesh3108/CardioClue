@@ -1,0 +1,117 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container-fluid h-100">
+  <div class="row h-100 g-4">
+    
+    <!-- Left Section (2x2 cards) -->
+    <div class="col-lg-7 d-flex flex-column h-100">
+      <div class="row row-cols-2 g-4 h-100">
+        <div class="col d-flex">
+          <div class="card shadow-sm flex-fill d-flex align-items-center justify-content-center">
+            <h4 class="text-muted text-center">News</h4>
+          </div>
+        </div>
+        <div class="col d-flex">
+          <div class="card shadow-sm flex-fill d-flex align-items-center justify-content-center">
+            <h4 class="text-muted text-center">Doctors Tips</h4>
+          </div>
+        </div>
+        <div class="col d-flex">
+          <div class="card shadow-sm flex-fill d-flex align-items-center justify-content-center">
+            <h4 class="text-muted text-center">User Experience</h4>
+          </div>
+        </div>
+        <div class="col d-flex">
+          <div class="card shadow-sm flex-fill d-flex align-items-center justify-content-center">
+            <h4 class="text-muted text-center">Health Insights</h4>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Right Section (Login Page full height) -->
+    <div class="col-lg-5 d-flex h-100">
+      <div class="card shadow-sm flex-fill d-flex align-items-center justify-content-center">
+        <div class="card-body w-100 p-4 p-md-5">
+          <h3 id="formTitle" class="card-title mb-4 text-center fw-bold">Login</h3>
+          <p id="formSubtitle" class="text-muted text-center mb-4">
+            Enter your name and phone number to receive an OTP.
+          </p>
+          
+          <!-- Admin Login Toggle -->
+          <div class="mb-3 text-center">
+            <div class="form-check form-switch d-inline-flex align-items-center">
+              <input class="form-check-input" type="checkbox" id="adminToggle" onchange="toggleAdminLogin()">
+              <label class="form-check-label ms-2" for="adminToggle">
+                <strong>Admin Login</strong>
+              </label>
+            </div>
+          </div>
+
+          <!-- User Form -->
+          <form method="post" id="userForm" class="d-flex flex-column gap-3">
+            <div>
+              <label class="form-label">Name</label>
+              <input type="text" class="form-control" name="name" required>
+            </div>
+            <div>
+              <label class="form-label">Phone number</label>
+              <input type="tel" class="form-control" name="phone" required minlength="10" maxlength="10"
+                     pattern="[0-9]{10}" inputmode="numeric"
+                     title="Enter exactly 10 digits (0-9), no spaces or country code"
+                     oninput="this.value=this.value.replace(/[^0-9]/g,'').slice(0,10)">
+            </div>
+            <div class="d-grid">
+              <button class="btn btn-primary btn-lg">Get OTP</button>
+            </div>
+          </form>
+
+          <!-- Admin Form -->
+          <form method="post" id="adminForm" class="d-flex flex-column gap-3" style="display: none;">
+            <div>
+              <label class="form-label">Admin Name</label>
+              <input type="text" class="form-control" name="admin_name" placeholder="Enter admin name" required>
+            </div>
+            <div>
+              <label class="form-label">Admin Phone</label>
+              <input type="tel" class="form-control" name="admin_phone" placeholder="Enter admin phone"
+                     minlength="10" maxlength="10" pattern="[0-9]{10}" inputmode="numeric"
+                     title="Enter exactly 10 digits (0-9), no spaces or country code"
+                     oninput="this.value=this.value.replace(/[^0-9]/g,'').slice(0,10)" required>
+            </div>
+            <div class="d-grid">
+              <button class="btn btn-warning btn-lg">Admin Login</button>
+            </div>
+          </form>
+
+        </div>
+      </div>
+    </div>
+    
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleAdminLogin() {
+  const adminToggle = document.getElementById('adminToggle');
+  const userForm = document.getElementById('userForm');
+  const adminForm = document.getElementById('adminForm');
+  const formTitle = document.getElementById('formTitle');
+  const formSubtitle = document.getElementById('formSubtitle');
+  
+  if (adminToggle.checked) {
+    userForm.style.display = 'none';
+    adminForm.style.display = 'block';
+    formTitle.innerText = "Admin Login";
+    formSubtitle.innerText = "Enter your admin credentials to continue.";
+  } else {
+    userForm.style.display = 'block';
+    adminForm.style.display = 'none';
+    formTitle.innerText = "Login";
+    formSubtitle.innerText = "Enter your name and phone number to receive an OTP.";
+  }
+}
+</script>
+{% endblock %}
